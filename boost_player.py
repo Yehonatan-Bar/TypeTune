@@ -19,7 +19,7 @@ from pynput import keyboard
 SONGS_DIR = Path(__file__).parent / "app" / "songs"
 SAMPLE_RATE = 44100
 BASE_VOLUME = 0.12
-BOOST_MULTIPLIER = 3.0
+BOOST_MULTIPLIER = 5.0
 DECAY_RATE = 8.0
 SUPPORTED = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
 BLOCK_SIZE = 1024
