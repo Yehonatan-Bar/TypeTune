@@ -1,0 +1,743 @@
+אפיון למפתח: Keyboard‑Driven Music Player
+1. מטרת המערכת
+לבנות אפליקציה/סקריפט שרץ במחשב ומאזין ללחיצות מקלדת באופן פסיבי. המשתמש ממשיך לעבוד רגיל במחשב. בכל לחיצה על מקש, בלי קשר לאיזה מקש נלחץ, המערכת מקדמת את השיר הנוכחי.
+המערכת לא תנגן תו מיד בכל לחיצה. במקום זה, כל לחיצה מוסיפה “קרדיט התקדמות”, והנגן הפנימי מנגן את השיר לפי הקצב המוזיקלי המקורי שלו.
+המשתמש לא צריך להכין JSON, לא לבחור BPM, לא לסמן תווים, ולא להגדיר כלום. הוא רק שם קובץ שיר בתיקייה.
+
+2. החלטת מוצר חשובה
+יש שני מצבי ניגון:
+מצב A — MIDI / MusicXML / JSON מוכן
+אם המשתמש שם קובץ:
+.mid
+.midi
+.musicxml
+.song.json
+
+המערכת תחלץ תווים, אורכי תווים, טמפו, תיבות ופרייזים, ותנגן את השיר כסינתיסייזר.
+זה המצב הכי טוב ל”ניגון תווים”.
+מצב B — Audio רגיל: MP3 / WAV / FLAC / M4A
+אם המשתמש שם קובץ:
+.mp3
+.wav
+.flac
+.m4a
+.ogg
+
+המערכת לא תנסה להסתמך רק על חילוץ תווים. היא תנגן את האודיו המקורי של השיר, אבל תשלוט בהתקדמות שלו לפי ההקלדות.
+המערכת תנתח:
+BPM
+beat grid
+onsets
+phrase boundaries משוערות
+energy / loudness
+
+ואז בזמן ההקלדה היא תנגן את השיר המקורי בחתיכות מוזיקליות תקינות: פעמה, חצי תיבה, תיבה או פראזה קצרה.
+הסיבה: תמלול אוטומטי של אודיו ל־MIDI עובד טוב יותר במקרים פשוטים כמו כלי בודד, אבל בשיר מלא עם שירה, תופים, באס והרמוניה הוא עלול לייצר הרבה תווים שגויים. Basic Pitch, למשל, הוא כלי audio‑to‑MIDI, אבל גם הדמו הרשמי שלו מציג שימוש אידיאלי כמו הקלטה של כלי יחיד, וגרסת ה־TypeScript מציינת שהוא עובד הכי טוב על כלי אחד בכל פעם. (basicpitch.spotify.com)
+
+3. Stack מומלץ
+ל־MVP עדיף לבנות את זה ב־Python, כי יש לו אקוסיסטם טוב לניתוח אודיו, MIDI וניגון מקומי.
+ספריות מומלצות:
+watchdog        - מעקב אחרי תיקיית השירים
+pynput          - האזנה ללחיצות מקלדת
+librosa         - ניתוח BPM, beats, onsets
+pretty_midi     - קריאה וניתוח של MIDI
+basic-pitch     - ניסיון אופציונלי לחילוץ MIDI מאודיו
+pyfluidsynth    - ניגון MIDI דרך SoundFont
+sounddevice     - ניגון/הזרמת אודיו
+ffmpeg          - המרת פורמטי אודיו לקובץ עבודה אחיד
+
+watchdog מיועדת למעקב אחרי אירועי filesystem, ו־PyPI שלה מתאר אותה כספרייה וכלי shell למעקב אחרי שינויים בתיקיות. (PyPI)
+pynput תומכת ב־keyboard listener לאירועי לחיצה ושחרור, כשה־listener רץ כ־thread נפרד. (pynput)
+librosa היא ספריית Python לניתוח מוזיקה ואודיו, וכוללת beat tracking ו־onset detection. (Librosa)
+pretty_midi מיועדת לקריאה, שינוי וניתוח של קובצי MIDI. (PyPI)
+FluidSynth הוא סינתיסייזר תוכנה שמבוסס על SoundFont 2, ו־pyfluidsynth מספקת bindings שמאפשרים לשלוח NOTEON/NOTEOFF לניגון תווים. (FluidSynth)
+ffmpeg מתאים להמרה וקריאה של מגוון פורמטי אודיו. (FFmpeg)
+
+4. מבנה תיקיות
+המערכת צריכה ליצור מבנה כזה:
+app/
+  main.py
+  config.yaml
+
+  songs/
+    example.mid
+    user_song.mp3
+
+  .song-cache/
+    <song_hash>/
+      manifest.json
+      analysis.json
+      normalized.wav
+      extracted.mid
+      waveform.cache
+      import.log
+
+  soundfonts/
+    default.sf2
+
+  logs/
+    app.log
+
+המשתמש עובד רק עם:
+songs/
+
+כל השאר פנימי.
+אסור לדרוש מהמשתמש ליצור JSON ידנית. אם יש צורך ב־JSON, המערכת יוצרת אותו לבד בתוך:
+.song-cache/<song_hash>/manifest.json
+
+
+5. התנהגות כללית של התיקייה
+המפתח צריך לממש watcher על תיקיית songs.
+דרישות:
+בזמן עליית האפליקציה, לסרוק את כל הקבצים שכבר קיימים בתיקייה.
+בזמן ריצה, לזהות קובץ חדש שהמשתמש הוסיף.
+להמתין עד שהעתקת הקובץ הסתיימה לפני import.
+לחשב hash לפי תוכן הקובץ, לא לפי שם בלבד.
+אם הקובץ כבר נותח בעבר, להשתמש ב־cache.
+אם המשתמש מחק קובץ מהתיקייה, להסיר אותו מרשימת ההשמעה הפעילה, אבל לא חובה למחוק cache.
+אם המשתמש החליף קובץ עם אותו שם אבל תוכן אחר, לזהות לפי hash ולייבא מחדש.
+בדיקת “העתקה הסתיימה”:
+def wait_until_file_is_stable(path, stable_seconds=2.0, timeout_seconds=60.0):
+    # Wait until file size stops changing before importing.
+    ...
+
+
+6. פורמטים נתמכים
+ב־MVP יש לתמוך לפחות ב:
+.mid
+.midi
+.mp3
+.wav
+.flac
+.m4a
+.ogg
+
+אם רוצים תמיכה מתקדמת יותר:
+.musicxml
+.xml
+.song.json
+
+אם קובץ לא נתמך:
+אין לקרוס
+אין להציג שגיאת מערכת למשתמש
+לכתוב log
+להתעלם ממנו
+להמשיך לנגן את שאר השירים
+
+
+7. קובץ manifest פנימי
+לכל שיר המערכת צריכה ליצור manifest אחיד, גם אם המקור הוא MIDI וגם אם המקור הוא MP3.
+דוגמה:
+{
+  "schemaVersion": 1,
+  "sourceFile": "songs/user_song.mp3",
+  "sourceHash": "sha256_here",
+  "title": "user_song",
+  "artist": null,
+  "importedAt": "2026-05-14T12:00:00+03:00",
+  "mode": "audio",
+  "durationSeconds": 183.42,
+  "estimatedBpm": 96.0,
+  "timeSignature": {
+    "numerator": 4,
+    "denominator": 4
+  },
+  "analysisConfidence": 0.78,
+  "paths": {
+    "normalizedAudio": ".song-cache/hash/normalized.wav",
+    "analysis": ".song-cache/hash/analysis.json",
+    "extractedMidi": ".song-cache/hash/extracted.mid"
+  },
+  "behavior": {
+    "creditPerKeyBeats": 0.125,
+    "maxCreditBeats": 8,
+    "minPlaybackChunkBeats": 1,
+    "idleStopBoundary": "beat",
+    "fadeMs": 35,
+    "allowTempoFlex": true,
+    "tempoFlexMin": 0.92,
+    "tempoFlexMax": 1.08
+  }
+}
+
+ל־MIDI:
+{
+  "schemaVersion": 1,
+  "sourceFile": "songs/example.mid",
+  "sourceHash": "sha256_here",
+  "title": "example",
+  "mode": "midi",
+  "durationBeats": 64,
+  "estimatedBpm": 120,
+  "timeSignature": {
+    "numerator": 4,
+    "denominator": 4
+  },
+  "leadTrackIndex": 0,
+  "analysisConfidence": 0.95,
+  "behavior": {
+    "creditPerKeyBeats": 0.125,
+    "maxCreditBeats": 8,
+    "minPlaybackChunkBeats": 0.5,
+    "idleStopBoundary": "beat",
+    "fadeMs": 15,
+    "allowTempoFlex": true,
+    "tempoFlexMin": 0.95,
+    "tempoFlexMax": 1.05
+  }
+}
+
+
+8. קובץ analysis פנימי
+עבור אודיו:
+{
+  "mode": "audio",
+  "bpm": 96.0,
+  "beatTimesSeconds": [0.21, 0.84, 1.47, 2.10],
+  "barTimesSeconds": [0.21, 2.73, 5.25],
+  "phraseTimesSeconds": [0.21, 10.29, 20.37],
+  "onsetTimesSeconds": [0.21, 0.52, 0.84],
+  "loudnessCurve": [],
+  "confidence": {
+    "tempo": 0.82,
+    "beatGrid": 0.76,
+    "phraseBoundaries": 0.55
+  }
+}
+
+עבור MIDI:
+{
+  "mode": "midi",
+  "bpm": 120,
+  "ticksPerBeat": 480,
+  "notes": [
+    {
+      "pitch": 64,
+      "startBeat": 0,
+      "durationBeats": 1,
+      "velocity": 92,
+      "channel": 0
+    },
+    {
+      "pitch": 64,
+      "startBeat": 1,
+      "durationBeats": 1,
+      "velocity": 88,
+      "channel": 0
+    }
+  ],
+  "phrases": [
+    {
+      "startBeat": 0,
+      "endBeat": 8
+    }
+  ],
+  "confidence": {
+    "melodyTrack": 0.9,
+    "tempo": 1.0
+  }
+}
+
+
+9. Import pipeline
+המפתח צריך לממש מחלקה בשם דומה ל:
+class SongImporter:
+    def import_file(self, path: Path) -> ImportedSong:
+        ...
+
+ה־pipeline:
+1. Validate file
+2. Wait until stable
+3. Compute hash
+4. Check cache
+5. Detect file type
+6. Normalize if audio
+7. Analyze
+8. Generate manifest.json
+9. Generate analysis.json
+10. Add song to active playlist
+
+
+10. Import לקובץ MIDI
+עבור MIDI:
+לקרוא את הקובץ עם pretty_midi.
+לחלץ BPM אם קיים.
+לחלץ time signature אם קיים.
+לחלץ את כל התווים.
+לבחור track מוביל.
+לנקות תווים קצרים מדי.
+לבצע quantization קל.
+ליצור analysis.json.
+ליצור manifest.json.
+בחירת track מוביל:
+עדיפות 1: שם track מכיל melody / lead / vocal / right hand
+עדיפות 2: track מונופוני יחסית
+עדיפות 3: track עם ממוצע pitch גבוה יחסית
+עדיפות 4: track עם הרבה תווים אבל לא צפיפות קיצונית
+
+לא להשתמש בכל התווים מכל הערוצים כברירת מחדל, כי זה עלול להישמע עמוס. עבור החוויה הזאת עדיף להתחיל ממלודיה בלבד.
+
+11. Import לקובץ Audio
+עבור MP3/WAV/FLAC/M4A:
+להמיר לקובץ עבודה אחיד:
+WAV
+mono או stereo קבוע
+sample rate קבוע, למשל 44100Hz
+
+להריץ beat tracking עם librosa.
+להריץ onset detection.
+לחשב BPM.
+ליצור beat grid.
+לשער תיבות לפי 4/4 כברירת מחדל.
+לשער phrase boundaries כל 4/8/16 תיבות, לפי onsets/loudness אם אפשר.
+לשמור normalized audio.
+ליצור analysis.json.
+ליצור manifest.json.
+תמלול אופציונלי:
+להריץ Basic Pitch על האודיו.
+ליצור extracted.mid.
+לנתח אותו כמו MIDI.
+להשתמש בו רק אם confidence סביר.
+לא לתת לכישלון בתמלול להפיל את import.
+כלומר:
+audio playback חייב לעבוד גם בלי extracted.mid
+
+
+12. Quality score
+לכל שיר צריך לחשב analysisConfidence.
+דוגמה:
+{
+  "analysisConfidence": 0.78,
+  "warnings": [
+    "Beat grid confidence is medium",
+    "No reliable MIDI melody was extracted"
+  ]
+}
+
+אסור לעצור את המשתמש בגלל confidence נמוך.
+במקום זה, המערכת צריכה לעבור למצב בטוח יותר.
+אם confidence גבוה:
+עצירה על beat/bar
+אפשר tempo flex
+אפשר chunks קצרים יותר
+
+אם confidence נמוך:
+לנגן chunks ארוכים יותר
+לעצור רק עם fade
+לא לבצע קפיצות חדות
+להסתמך על האודיו המקורי
+
+
+13. מנגנון הקרדיט
+זה החלק המרכזי.
+לא עושים:
+keypress -> play next note immediately
+
+כן עושים:
+keypress -> add progress credit
+internal player -> plays musically while credit exists
+
+משתנים מרכזיים:
+credit_beats = 0.0
+max_credit_beats = song.behavior.maxCreditBeats
+credit_per_key_beats = song.behavior.creditPerKeyBeats
+playhead_beat = 0.0
+
+בכל לחיצה:
+def on_any_key_press():
+    # Count the key event only. Do not store the actual key.
+    credit_beats = min(max_credit_beats, credit_beats + credit_per_key_beats)
+
+הערה חשובה: לא לשמור את התו שהמשתמש הקליד. לא לכתוב אותו ל־log. לא לשלוח אותו לשום מקום. צריך רק לדעת שקרתה לחיצה.
+
+14. נגן Audio בזמן ריצה
+במצב audio, המערכת מנגנת את האודיו המקורי.
+הלוגיקה:
+אם יש credit:
+    להמשיך לנגן מה-playhead הנוכחי
+    לצרוך credit לפי הזמן המוזיקלי שעבר
+
+אם אין credit:
+    לא לעצור מייד באמצע צליל
+    להגיע ל-boundary קרוב
+    לעשות fade out קצר
+    להמתין
+
+כשהמשתמש מקליד שוב:
+    לעשות fade in קצר
+    להמשיך מאותה נקודה
+
+Boundary יכול להיות:
+beat
+bar
+phrase
+
+ב־MVP כדאי להתחיל עם:
+idleStopBoundary = beat
+fadeMs = 35
+minPlaybackChunkBeats = 1
+
+כלומר, גם אם המשתמש לחץ רק פעם אחת, המערכת לא חייבת לנגן 20ms. היא יכולה לצבור לחיצות ולנגן לפחות פעמה אחת כשיש מספיק קרדיט.
+
+15. נגן MIDI בזמן ריצה
+במצב MIDI, המערכת מנגנת תווים דרך סינתיסייזר.
+הלוגיקה:
+ה-playhead מתקדם לפי BPM
+התווים מתוזמנים לפי startBeat/durationBeats
+credit נצרך לפי beats שעברו
+אם נגמר credit, עוצרים בנקודה מוזיקלית
+
+אסור לירות תווים לפי קצב הלחיצות עצמו.
+פסאודו־קוד:
+def scheduler_tick(delta_seconds):
+    # Convert elapsed wall-clock time to musical beats.
+    delta_beats = seconds_to_beats(delta_seconds, current_bpm)
+
+    if credit_beats <= 0:
+        maybe_pause_at_boundary()
+        return
+
+    advance_playhead(delta_beats)
+    trigger_due_notes(playhead_beat)
+    credit_beats -= delta_beats
+
+
+16. התאמת behavior אוטומטית לכל שיר
+המשתמש לא צריך להגדיר כלום. המערכת צריכה לייצר behavior לבד לפי השיר.
+פרמטרים:
+{
+  "creditPerKeyBeats": 0.125,
+  "maxCreditBeats": 8,
+  "minPlaybackChunkBeats": 1,
+  "idleStopBoundary": "beat",
+  "fadeMs": 35,
+  "allowTempoFlex": true,
+  "tempoFlexMin": 0.92,
+  "tempoFlexMax": 1.08
+}
+
+כללי ברירת מחדל:
+שיר איטי:
+  creditPerKeyBeats גבוה יותר
+  maxCreditBeats גבוה יותר
+  אפשר fade ארוך יותר
+  אפשר לעצור על bar/phrase
+
+שיר מהיר:
+  creditPerKeyBeats נמוך יותר
+  maxCreditBeats נמוך יותר
+  fade קצר
+  לעצור על beat
+
+שיר עם beat confidence נמוך:
+  minPlaybackChunkBeats גבוה יותר
+  פחות tempo flex
+  להסתמך יותר על fade מאשר על boundary מדויק
+
+MIDI עם מלודיה ברורה:
+  אפשר chunks קצרים
+  אפשר עצירה על beat
+
+דוגמת פונקציה:
+def build_behavior_profile(analysis):
+    bpm = analysis.bpm
+    confidence = analysis.confidence.overall
+
+    behavior = {
+        "creditPerKeyBeats": 0.125,
+        "maxCreditBeats": 8,
+        "minPlaybackChunkBeats": 1,
+        "idleStopBoundary": "beat",
+        "fadeMs": 35,
+        "allowTempoFlex": True,
+        "tempoFlexMin": 0.92,
+        "tempoFlexMax": 1.08,
+    }
+
+    if bpm < 80:
+        behavior["creditPerKeyBeats"] = 0.18
+        behavior["maxCreditBeats"] = 12
+        behavior["fadeMs"] = 60
+
+    if bpm > 150:
+        behavior["creditPerKeyBeats"] = 0.08
+        behavior["maxCreditBeats"] = 6
+        behavior["fadeMs"] = 20
+
+    if confidence < 0.6:
+        behavior["minPlaybackChunkBeats"] = 2
+        behavior["idleStopBoundary"] = "soft"
+        behavior["allowTempoFlex"] = False
+
+    return behavior
+
+
+17. התאמה לקצב ההקלדה של המשתמש
+כדי שזה יעבוד גם אצל משתמש שמקליד מהר וגם אצל משתמש שמקליד לאט, צריך מנגנון adaptive.
+לשמור rolling average של קצב ההקלדה:
+keys per second over last 10 seconds
+keys per second over last 60 seconds
+
+ואז לשנות בעדינות את creditPerKeyBeats בתוך גבולות.
+לא לשנות בצורה קופצנית.
+דוגמה:
+def adapt_credit_per_key(song_behavior, typing_rate):
+    # Keep adaptation slow to avoid unstable playback.
+    ...
+
+מטרה:
+בהקלדה רגילה ורציפה:
+  השיר מתקדם בערך בקצב המקורי
+
+בהקלדה איטית:
+  השיר מנגן מעט, עוצר מוזיקלית, ואז ממשיך
+
+בהקלדה מהירה:
+  השיר לא מאיץ באופן מוגזם; הקרדיט נאגר עד תקרה
+
+
+18. מעבר בין שירים
+דרישות:
+יש playlist פנימי מכל השירים התקינים בתיקייה.
+סדר ברירת מחדל: לפי שם קובץ או זמן הוספה. לבחור אחד ולהיות עקביים.
+כשהשיר נגמר, לעבור לשיר הבא.
+כשהשיר האחרון נגמר, לחזור לשיר הראשון.
+אם בזמן ריצה נוסף שיר חדש, להוסיף אותו לרשימה בלי לאתחל את האפליקציה.
+אם השיר הנוכחי נמחק מהתיקייה, לסיים אותו או לדלג לשיר הבא בצורה נקייה.
+
+19. פרטיות ובטיחות
+זה חשוב מאוד בגלל שמאזינים למקלדת.
+דרישות חובה:
+לא לשמור אילו מקשים נלחצו
+לא לשמור טקסט
+לא לשמור רצפי מקשים
+לא לשלוח מידע החוצה
+לא לעבוד במצב נסתר
+לא להוסיף persistence חשאי
+לא להסתיר תהליך מהמשתמש
+
+כן לשמור רק:
+timestamp של אירוע לחיצה
+מונה לחיצות
+קצב לחיצות מחושב
+
+וגם זה רק בזיכרון, לא בקובץ, אלא אם יש צורך ממשי ל־debug — וגם אז בלי key values.
+צריך להיות למשתמש:
+דרך ברורה להפעיל/לכבות
+אייקון tray או חלון קטן
+מצב pause
+אפשרות exit
+
+
+20. קונפיגורציה
+קובץ config.yaml בסיסי:
+songsDirectory: "./songs"
+cacheDirectory: "./.song-cache"
+soundFontPath: "./soundfonts/default.sf2"
+
+keyboard:
+  countOnly: true
+  ignoreAutoRepeat: true
+
+playback:
+  defaultVolume: 0.35
+  maxCreditBeats: 8
+  defaultCreditPerKeyBeats: 0.125
+  fadeMs: 35
+
+import:
+  createJsonCache: true
+  runAudioToMidiExtraction: true
+  preferOriginalAudioForAudioFiles: true
+
+המשתמש הרגיל לא צריך לערוך את הקובץ הזה.
+
+21. טיפול ב־auto repeat
+כשמשתמש מחזיק מקש לחוץ, מערכות הפעלה מייצרות key repeat. צריך להחליט.
+ברירת מחדל מומלצת:
+להתעלם מ־auto repeat
+
+כלומר לחיצה ממושכת לא אמורה לייצר מאות יחידות credit.
+אם קשה לזהות auto repeat בכל OS, להוסיף debounce:
+אותו key source בטווח של פחות מ־30ms לא נספר
+
+אבל לא לשמור את ערך המקש עצמו. אפשר לשמור רק timestamp אחרון כללי.
+
+22. Audio fades
+כדי שהשיר לא יישמע חתוך:
+בכל עצירה: fade out קצר
+בכל חזרה: fade in קצר
+
+ערכים:
+audio mode: 25–80ms
+midi mode: 5–25ms
+
+אם עוצרים על beat boundary, fade קצר מספיק.
+אם אין beat confidence, להשתמש ב־fade קצת ארוך יותר.
+
+23. Quantization
+ב־MIDI או extracted MIDI:
+לעגל startBeat לרשת קרובה.
+לעגל durationBeats.
+להסיר תווים קצרים מדי.
+למזג תווים זהים סמוכים.
+להעדיף מלודיה מונופונית.
+רשתות מומלצות:
+1/16 beat
+1/12 beat עבור טריולות
+
+ב־MVP אפשר להתחיל רק עם:
+1/16 beat
+
+
+24. בחירת מלודיה מתוך MIDI צפוף
+אם יש הרבה תווים בו־זמנית:
+לא לנגן את כולם
+
+אחרת זה יהפוך לרעש.
+אלגוריתם פשוט:
+1. חלק את הזמן לחלונות לפי 1/16 או 1/8 beat.
+2. בכל חלון, מצא תווים פעילים.
+3. העדף תו גבוה יחסית, עם velocity גבוה, duration סביר.
+4. אל תקפוץ יותר מדי בין pitch-ים אם יש חלופה קרובה.
+5. צור קו מלודי אחד.
+
+זה לא מושלם, אבל עדיף בהרבה מניגון כל התווים.
+
+25. מצב fallback
+אם import נכשל:
+לא להפיל את האפליקציה
+לכתוב log
+להמשיך לשיר הבא
+
+אם ניתוח beat נכשל באודיו:
+mode = audio
+bpm = 120 default
+boundaries = time-based every 0.5s or 1s
+confidence = low
+behavior.minPlaybackChunkBeats = 2
+idleStopBoundary = soft
+
+כלומר השיר עדיין יעבוד, פשוט פחות מוזיקלי.
+
+26. API פנימי מוצע
+מחלקות:
+class SongLibrary:
+    def scan(self) -> None: ...
+    def get_ready_songs(self) -> list: ...
+    def on_file_added(self, path: Path) -> None: ...
+    def on_file_removed(self, path: Path) -> None: ...
+
+class SongImporter:
+    def import_file(self, path: Path) -> ImportedSong: ...
+
+class SongAnalyzer:
+    def analyze_audio(self, path: Path) -> AudioAnalysis: ...
+    def analyze_midi(self, path: Path) -> MidiAnalysis: ...
+
+class BehaviorBuilder:
+    def build(self, analysis) -> SongBehavior: ...
+
+class KeyboardCreditController:
+    def on_key_press(self) -> None: ...
+    def consume(self, beats: float) -> None: ...
+    def get_credit(self) -> float: ...
+
+class PlaybackEngine:
+    def load_song(self, song: ImportedSong) -> None: ...
+    def tick(self, delta_seconds: float) -> None: ...
+    def stop_at_boundary(self) -> None: ...
+
+class AudioPlaybackEngine(PlaybackEngine):
+    ...
+
+class MidiPlaybackEngine(PlaybackEngine):
+    ...
+
+class PlaylistController:
+    def next_song(self) -> None: ...
+    def previous_song(self) -> None: ...
+    def restart_current_song(self) -> None: ...
+
+
+27. Main loop
+פסאודו־קוד:
+def main():
+    config = load_config()
+
+    library = SongLibrary(config)
+    importer = SongImporter(config)
+    keyboard = KeyboardCreditController(config)
+    playlist = PlaylistController(library)
+    player = PlayerRouter(config)
+
+    library.scan()
+
+    start_folder_watcher(
+        directory=config.songsDirectory,
+        on_added=library.on_file_added,
+        on_removed=library.on_file_removed,
+    )
+
+    start_keyboard_listener(
+        on_press=keyboard.on_key_press,
+    )
+
+    current_song = playlist.get_current_song()
+    player.load_song(current_song)
+
+    while app_is_running():
+        delta_seconds = clock.tick()
+
+        player.set_credit_controller(keyboard)
+        player.tick(delta_seconds)
+
+        if player.current_song_finished():
+            current_song = playlist.next_song()
+            player.load_song(current_song)
+
+
+28. קריטריוני הצלחה ל־MVP
+המפתח צריך לבדוק את המערכת כך:
+בתיקייה יש שיר אחד מוכן.
+מריצים את האפליקציה.
+האפליקציה מזהה את השיר לבד.
+אם אין cache, היא יוצרת cache לבד.
+המשתמש מקליד בכל אפליקציה אחרת.
+ההקלדה ממשיכה לעבוד רגיל.
+השיר מתקדם רק כשיש לחיצות.
+השיר נשמע מוזיקלי, לא כמו רצף אקראי של תווים.
+כשמפסיקים להקליד, השיר לא נחתך בצורה מכוערת.
+כשממשיכים להקליד, השיר ממשיך מאותה נקודה.
+בסוף השיר, עוברים לשיר הבא.
+בסוף הרשימה, חוזרים להתחלה.
+אם מוסיפים שיר חדש לתיקייה בזמן ריצה, הוא נכנס לרשימה.
+אם מוסיפים MP3, הוא עובד גם בלי שהמשתמש יצר JSON.
+אם מוסיפים MIDI, הוא מנוגן כתווים מסונתזים.
+
+29. מה לא לבנות ב־MVP
+לא לבנות בהתחלה:
+UI מורכב
+עריכת שירים
+בחירת כלים לכל track
+זיהוי אקורדים מתקדם
+תמלול מושלם של MP3 ל־MIDI
+סנכרון לענן
+שמירת היסטוריית הקלדה
+
+ה־MVP צריך להתמקד בזה:
+drop file into folder
+auto import
+auto cache
+keyboard credit
+musical playback
+playlist loop
+
+
+30. ההחלטה הכי חשובה למימוש
+עבור קובצי אודיו רגילים, לא לנסות להפוך כל MP3 לרשימת תווים ולנגן אותם אחד־אחד. זה בדיוק עלול להחזיר אותך לבעיה המקורית: אוסף צלילים לא ברור.
+במקום זה:
+MP3/WAV -> play original audio, controlled by keyboard credit
+MIDI -> play notes, controlled by keyboard credit
+
+זו הדרך הכי סבירה לקבל חוויה שבה המשתמש רק שם שיר בתיקייה, לא עושה כלום, ועדיין מזהה את המוזיקה כשיר אמיתי.
