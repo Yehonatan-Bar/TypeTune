@@ -1,0 +1,26 @@
+# Music files
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.aac
+*.m4a
+*.wma
+*.opus
+
+# Cache
+music_lib/.cache/
+app/.song-cache/
+
+# Logs
+app/logs/
+
+# IDE / tool configs
+.claude/
+.codex/
+
+# Python virtual environment
+.venv/
+venv/
+__pycache__/
+*.pyc

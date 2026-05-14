@@ -1,0 +1,18 @@
+songsDirectory: "./songs"
+cacheDirectory: "./.song-cache"
+soundFontPath: "./soundfonts/default.sf2"
+
+keyboard:
+  countOnly: true
+  ignoreAutoRepeat: true
+
+playback:
+  defaultVolume: 0.35
+  maxCreditBeats: 8
+  defaultCreditPerKeyBeats: 0.125
+  fadeMs: 35
+
+import:
+  createJsonCache: true
+  runAudioToMidiExtraction: false
+  preferOriginalAudioForAudioFiles: true
