@@ -144,7 +144,7 @@ def main():
 
     print("=== TypeTune Boost Player ===")
     print(f"Songs folder: {SONGS_DIR}")
-    print("Music plays continuously. Typing boosts volume 3x.")
+    print("Music plays continuously. Typing boosts volume 5x.")
     print("F12 = pause/resume | Ctrl+C = quit\n")
 
     songs = find_songs()
